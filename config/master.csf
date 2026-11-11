@@ -1,0 +1,17 @@
+; CodeViser API Master configuration example for NXP S32K312 Cortex-M7
+
+MULtiCore.PORT 20000
+
+GLOBAL &QC_cpu
+GLOBAL &QC_jtag_cfg
+
+&QC_cpu="S32K312-M7"
+&QC_jtag_cfg="chain"
+
+DEBUG.HideDebugWindow OFF
+DEBUG.ResponseTimeOut 10000.ms
+
+SYStem.CPU S32K312-M7
+SYStem.CONFIG DEBUGPORTTYPE JTAG
+
+PRINT "CVD API Master ready - CPU=S32K312-M7, JTAG, PORT=20000"

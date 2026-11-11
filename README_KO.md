@@ -78,4 +78,3 @@ codeviser의 cvd_health를 호출해줘.
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
-

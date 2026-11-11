@@ -1,0 +1,6 @@
+status.log
+api-session.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
