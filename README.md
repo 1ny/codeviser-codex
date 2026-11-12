@@ -1,6 +1,6 @@
 # CodeViser–Codex Bridge
 
-CodeViser CVD가 설치된 Windows PC에 Codex 전역 MCP 연동을 추가합니다. CVD 프로그램, 드라이버, 펌웨어, `CVDAPI.dll` 및 별도 AI 콘솔은 포함하지 않습니다.
+CodeViser CVD가 설치된 Windows PC에 Codex 전역 MCP 연동을 추가합니다. CVD 프로그램, 드라이버, 펌웨어, `CVDAPI.dll` 는 포함하지 않으므로 기존에 설치되어있음을 전재합니다.
 
 ## 구조
 
