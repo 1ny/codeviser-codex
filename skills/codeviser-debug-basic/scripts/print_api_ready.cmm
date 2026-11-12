@@ -1,0 +1,7 @@
+; {
+;   "interface": 1,
+;   "safe": true,
+;   "arguments": {}
+; }
+
+PRINT "CodeViser MCP script interface ready"

@@ -1,7 +1,11 @@
 param(
     [string]$CvdRoot,
     [Alias('MasterConfig')][string]$MasterConfigPath,
-    [string]$AutoStartScript
+    [string]$AutoStartScript,
+    [ValidateSet('readonly', 'scripts', 'unrestricted')]
+    [string]$CvdAccessPolicy = 'scripts',
+    [string[]]$ApprovedScriptRoot,
+    [switch]$EnableGuiAutomation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -111,6 +115,23 @@ if ($AutoStartScript) {
     $AutoStartScript = (Resolve-Path -LiteralPath $AutoStartScript).Path
 }
 
+$builtInSkillRoot = Join-Path $packageRoot 'skills'
+if (-not $ApprovedScriptRoot) { $ApprovedScriptRoot = @($builtInSkillRoot) }
+elseif ($ApprovedScriptRoot -notcontains $builtInSkillRoot) {
+    $ApprovedScriptRoot = @($builtInSkillRoot) + @($ApprovedScriptRoot)
+}
+$resolvedScriptRoots = @()
+foreach ($scriptRoot in $ApprovedScriptRoot) {
+    if (-not (Test-Path -LiteralPath $scriptRoot -PathType Container)) {
+        throw "Approved CMM skill root was not found: $scriptRoot"
+    }
+    $resolvedScriptRoots += (Resolve-Path -LiteralPath $scriptRoot).Path
+}
+$scriptRootValue = $resolvedScriptRoots -join ';'
+if ($EnableGuiAutomation -and $CvdAccessPolicy -ne 'unrestricted') {
+    throw '-EnableGuiAutomation requires -CvdAccessPolicy unrestricted.'
+}
+
 $removeOldResult = Invoke-CodexCapture @('mcp', 'remove', 'codeviser_cvd')
 $removeResult = Invoke-CodexCapture @('mcp', 'remove', 'codeviser')
 $mcpArgs = @(
@@ -120,6 +141,9 @@ $mcpArgs = @(
     '--env', 'CVD_MULTI_PORT=8888',
     '--env', 'CVD_MASTER_PORT=20000',
     '--env', "CVD_HOTKEY_FILE=$hotkeyFile",
+    '--env', "CVD_ACCESS_POLICY=$CvdAccessPolicy",
+    '--env', "CVD_SCRIPT_ROOTS=$scriptRootValue",
+    '--env', "CVD_ENABLE_GUI_AUTOMATION=$($EnableGuiAutomation.IsPresent.ToString().ToLowerInvariant())",
     '--env', "CVD_STATUS_LOG=$(Join-Path $installRoot 'status.log')",
     '--env', 'CVD_POWERSHELL32=C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe',
     '--', 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
@@ -144,6 +168,9 @@ if ($addResult.ExitCode -ne 0) {
         CVD_MULTI_PORT = '8888'
         CVD_MASTER_PORT = '20000'
         CVD_HOTKEY_FILE = $hotkeyFile
+        CVD_ACCESS_POLICY = $CvdAccessPolicy
+        CVD_SCRIPT_ROOTS = $scriptRootValue
+        CVD_ENABLE_GUI_AUTOMATION = $EnableGuiAutomation.IsPresent.ToString().ToLowerInvariant()
         CVD_STATUS_LOG = (Join-Path $installRoot 'status.log')
         CVD_POWERSHELL32 = 'C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
     }
@@ -170,7 +197,16 @@ $shortcut.WorkingDirectory = Split-Path $cvdExe -Parent
 $shortcut.IconLocation = "$cvdExe,0"
 $shortcut.Save()
 
-@{ shortcut = $shortcutPath; codex = $codex; cvdRoot = $CvdRoot; installRoot = $installRoot; autoStartScript = $AutoStartScript } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installRoot 'install-info.json') -Encoding UTF8
+@{
+    shortcut = $shortcutPath
+    codex = $codex
+    cvdRoot = $CvdRoot
+    installRoot = $installRoot
+    autoStartScript = $AutoStartScript
+    accessPolicy = $CvdAccessPolicy
+    approvedScriptRoots = $resolvedScriptRoots
+    guiAutomation = $EnableGuiAutomation.IsPresent
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installRoot 'install-info.json') -Encoding UTF8
 
 Write-Host ''
 if (Test-Path -LiteralPath $errorLog) { Remove-Item -LiteralPath $errorLog -Force }
@@ -178,6 +214,9 @@ Write-Host 'INSTALL COMPLETE' -ForegroundColor Green
 Write-Host "MCP: codeviser"
 Write-Host "Install path: $installRoot"
 Write-Host "Shortcut: $shortcutPath"
+Write-Host "CVD access policy: $CvdAccessPolicy"
+Write-Host "Approved CMM skill roots: $scriptRootValue"
+Write-Host "GUI automation: $($EnableGuiAutomation.IsPresent)"
 if ($AutoStartScript) { Write-Host "Auto-start CMM: $AutoStartScript" }
 else { Write-Host 'Auto-start CMM: disabled (use -AutoStartScript "D:\path\autostart.cmm" to enable).' -ForegroundColor Yellow }
 Write-Host 'Fully close and restart Codex Desktop.' -ForegroundColor Yellow

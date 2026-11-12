@@ -44,7 +44,6 @@ if (-not (Test-Path -LiteralPath $dllPath)) {
 
 $nativeSource = @'
 using System;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 public static class CvdNative {
@@ -52,28 +51,6 @@ public static class CvdNative {
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool SetDllDirectory(string lpPathName);
-
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int command);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
-
-    public static IntPtr FindWindowForProcess(int processId) {
-        IntPtr first = IntPtr.Zero;
-        IntPtr visible = IntPtr.Zero;
-        EnumWindows((hWnd, lParam) => {
-            uint pid;
-            GetWindowThreadProcessId(hWnd, out pid);
-            if (pid != (uint)processId) return true;
-            if (first == IntPtr.Zero) first = hWnd;
-            if (IsWindowVisible(hWnd)) { visible = hWnd; return false; }
-            return true;
-        }, IntPtr.Zero);
-        return visible != IntPtr.Zero ? visible : first;
-    }
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)] public static extern int CVD_Init();
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)] public static extern int CVD_Connect(int port, string address);
@@ -108,76 +85,49 @@ function Connect-Cvd {
     if ($script:initResult -eq 0) { return $false }
     [void][CvdNative]::CVD_SetTimeOut($TimeoutMs)
     $script:connectResult = [CvdNative]::CVD_Connect($MultiServerPort, $HostAddress)
-    if ($script:connectResult -eq 0) { return $false }
+    if ($script:connectResult -eq 0) {
+        [void][CvdNative]::CVD_Quit()
+        return $false
+    }
     $script:configResult = [CvdNative]::CVD_Config($CvdMasterPort)
     $script:connected = ($script:configResult -ne 0)
+    if (-not $script:connected) { [void][CvdNative]::CVD_Quit() }
     return $script:connected
 }
 
 function Require-Cvd {
+    if ($script:connected -and [CvdNative]::CVD_CheckSession() -eq 0) {
+        [void][CvdNative]::CVD_Quit()
+        $script:connected = $false
+    }
     if (-not (Connect-Cvd)) {
         throw "CVD API connection failed (Init=$initResult, Connect=$connectResult, Config=$configResult). Check CVD-Multi-Server:8888 and CVD Master:$CvdMasterPort."
     }
 }
 
-function Get-VirtualKeyCode {
-    param([Parameter(Mandatory)][string]$Key)
-    if ($Key -match '^F(\d{1,2})$') {
-        $number = [int]$Matches[1]
-        if ($number -lt 1 -or $number -gt 24) { throw "Unsupported function key: $Key" }
-        return [byte](0x70 + $number - 1)
+function Get-CvdSnapshot {
+    $snapshot = [ordered]@{
+        cvdState = $null
+        debugState = $null
+        pc = $null
+        errors = @()
     }
-    if ($Key.Length -eq 1 -and $Key -match '^[A-Za-z0-9]$') {
-        return [byte][char]$Key.ToUpperInvariant()
-    }
-    throw "Unsupported CVD menu hotkey component: $Key"
-}
-
-function Send-CvdHotkey {
-    param([Parameter(Mandatory)][string]$Hotkey)
-    $parts = @($Hotkey -split '\+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-    if ($parts.Count -eq 0) { throw 'Empty CVD menu hotkey.' }
-    $modifiers = [System.Collections.Generic.List[byte]]::new()
-    $keyName = $null
-    foreach ($part in $parts) {
-        switch -Regex ($part) {
-            '^(Ctrl|Control)$' { $modifiers.Add([byte]0x11); continue }
-            '^Alt$' { $modifiers.Add([byte]0x12); continue }
-            '^Shift$' { $modifiers.Add([byte]0x10); continue }
-            default { $keyName = $part }
-        }
-    }
-    if (-not $keyName) { throw "Hotkey has no key component: $Hotkey" }
-    $keyCode = Get-VirtualKeyCode -Key $keyName
-    foreach ($modifier in $modifiers) { [CvdNative]::keybd_event($modifier, 0, 0, [UIntPtr]::Zero) }
-    [CvdNative]::keybd_event($keyCode, 0, 0, [UIntPtr]::Zero)
-    [CvdNative]::keybd_event($keyCode, 0, 2, [UIntPtr]::Zero)
-    for ($index = $modifiers.Count - 1; $index -ge 0; $index--) {
-        [CvdNative]::keybd_event($modifiers[$index], 0, 2, [UIntPtr]::Zero)
-    }
-    return ('VK 0x{0:X2}' -f $keyCode)
-}
-
-function Invoke-CvdMenuHotkey {
-    param([Parameter(Mandatory)][string]$Hotkey)
-    $window = [IntPtr]::Zero
-    foreach ($process in [Diagnostics.Process]::GetProcessesByName('CVD')) {
-        $process.Refresh()
-        $candidate = $process.MainWindowHandle
-        if ($candidate -eq [IntPtr]::Zero) { $candidate = [CvdNative]::FindWindowForProcess($process.Id) }
-        if ($candidate -ne [IntPtr]::Zero) { $window = $candidate; break }
-    }
-    if ($window -eq [IntPtr]::Zero) {
-        throw 'CVD GUI window was not found. DEBUG.HideDebugWindow ON may be hiding the window; menu execution requires a visible CVD window.'
-    }
-
-    [void][CvdNative]::ShowWindow($window, 9)
-    if (-not [CvdNative]::SetForegroundWindow($window)) {
-        throw 'CVD GUI window could not be activated, so the hotkey was not sent.'
-    }
-    Start-Sleep -Milliseconds 150
-    $keyCode = Send-CvdHotkey -Hotkey $Hotkey
-    return @{ hotkey = $Hotkey; keyCode = $keyCode; window = ('0x{0:X}' -f $window.ToInt64()) }
+    try {
+        $value = 0
+        if ([CvdNative]::CVD_GetState([ref]$value) -eq 0) { throw 'CVD_GetState failed.' }
+        $snapshot.cvdState = $value
+    } catch { $snapshot.errors += $_.Exception.Message }
+    try {
+        $value = 0
+        if ([CvdNative]::CVD_GetDebugState([ref]$value) -eq 0) { throw 'CVD_GetDebugState failed.' }
+        $snapshot.debugState = $value
+    } catch { $snapshot.errors += $_.Exception.Message }
+    try {
+        [uint32]$value = 0
+        if ([CvdNative]::CVD_GetCurrentPC([ref]$value) -eq 0) { throw 'CVD_GetCurrentPC failed.' }
+        $snapshot.pc = ('0x{0:X8}' -f $value)
+    } catch { $snapshot.errors += $_.Exception.Message }
+    return $snapshot
 }
 
 $firstConnect = Connect-Cvd
@@ -243,6 +193,8 @@ try {
             $id = $request.id
             switch ($request.command) {
                 'health' {
+                    if ($connected -and [CvdNative]::CVD_CheckSession() -eq 0) { $connected = $false }
+                    if (-not $connected) { $connected = Connect-Cvd }
                     $session = 0
                     if ($connected) { $session = [CvdNative]::CVD_CheckSession() }
                     Write-BridgeResponse @{ id = $id; ok = $true; result = @{
@@ -256,6 +208,27 @@ try {
                     $connected = $false
                     $ok = Connect-Cvd
                     Write-BridgeResponse @{ id = $id; ok = $ok; result = @{ connected = $ok; init = $initResult; connect = $connectResult; config = $configResult } }
+                }
+                'get_status' {
+                    $apiError = $null
+                    try { Require-Cvd } catch { $apiError = $_.Exception.Message }
+                    $session = $(if ($connected) { [CvdNative]::CVD_CheckSession() } else { 0 })
+                    $target = $(if ($connected -and $session -ne 0) { Get-CvdSnapshot } else {
+                        [ordered]@{ cvdState = $null; debugState = $null; pc = $null; errors = @($apiError) }
+                    })
+                    Write-BridgeResponse @{ id = $id; ok = $true; result = @{
+                        api = @{
+                            connected = ($connected -and $session -ne 0)
+                            session = $session
+                            host = $HostAddress
+                            multiServerPort = $MultiServerPort
+                            cvdMasterPort = $CvdMasterPort
+                            processBits = 32
+                            dll = $dllPath
+                            error = $apiError
+                        }
+                        target = $target
+                    }}
                 }
                 'get_state' {
                     Require-Cvd
@@ -301,17 +274,46 @@ try {
                     $commandText = [string]$request.text
                     if ([string]::IsNullOrWhiteSpace($commandText)) { throw 'CVD command must not be empty.' }
                     if ($commandText.Length -gt 1024) { throw 'CVD command must be 1024 characters or fewer.' }
+                    if ($commandText -match '[\r\n\x00]') { throw 'CVD command must be one line.' }
+                    $before = Get-CvdSnapshot
                     $rc = [CvdNative]::CVD_Cmd($commandText)
                     if ($rc -eq 0) { throw "CVD_Cmd failed: $commandText" }
-                    Write-BridgeResponse @{ id = $id; ok = $true; result = @{ action = 'command'; command = $commandText; accepted = $true } }
-                }
-                'menu_hotkey' {
-                    $hotkey = [string]$request.hotkey
-                    if ([string]::IsNullOrWhiteSpace($hotkey)) { throw 'CVD menu hotkey must not be empty.' }
-                    $details = Invoke-CvdMenuHotkey -Hotkey $hotkey
+                    $settleMs = [Math]::Max(0, [Math]::Min([int]$request.settleMs, 5000))
+                    if ($settleMs -gt 0) { Start-Sleep -Milliseconds $settleMs }
+                    $after = Get-CvdSnapshot
                     Write-BridgeResponse @{ id = $id; ok = $true; result = @{
-                        action = 'menu_hotkey'; menuId = [string]$request.menuId; name = [string]$request.name;
-                        hotkey = $details.hotkey; transport = 'direct-gui'; window = $details.window; accepted = $true
+                        action = 'command'
+                        command = $commandText
+                        accepted = $true
+                        outputCapture = 'state-observation'
+                        before = $before
+                        after = $after
+                    }}
+                }
+                'run_script' {
+                    Require-Cvd
+                    $scriptPath = [IO.Path]::GetFullPath([string]$request.path)
+                    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "CMM script not found: $scriptPath" }
+                    if ([IO.Path]::GetExtension($scriptPath) -ine '.cmm') { throw 'Only .cmm scripts can be executed.' }
+                    $argumentsText = [string]$request.argumentsText
+                    if ($argumentsText -match '[\r\n\x00]') { throw 'CMM arguments must be one line.' }
+                    $escapedPath = $scriptPath.Replace('"', '""')
+                    $commandText = 'CD.DO "' + $escapedPath + '"'
+                    if (-not [string]::IsNullOrWhiteSpace($argumentsText)) { $commandText += ' ' + $argumentsText }
+                    $before = Get-CvdSnapshot
+                    $rc = [CvdNative]::CVD_Cmd($commandText)
+                    if ($rc -eq 0) { throw "CVD_Cmd failed while starting script: $scriptPath" }
+                    $settleMs = [Math]::Max(0, [Math]::Min([int]$request.settleMs, 5000))
+                    if ($settleMs -gt 0) { Start-Sleep -Milliseconds $settleMs }
+                    $after = Get-CvdSnapshot
+                    Write-BridgeResponse @{ id = $id; ok = $true; result = @{
+                        action = 'run_script'
+                        script = $scriptPath
+                        accepted = $true
+                        outputCapture = 'state-observation'
+                        before = $before
+                        after = $after
+                        note = 'CVDAPI.dll does not expose CVD console PRINT text.'
                     }}
                 }
                 'read_register' {
