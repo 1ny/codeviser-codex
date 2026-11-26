@@ -18,8 +18,8 @@ function Convert-ToAscii([string]$text) {
 }
 
 trap {
-    $details = Convert-ToAscii (($_ | Out-String).Trim())
-    Set-Content -LiteralPath $errorLog -Value $details -Encoding Ascii
+    $details = (($_ | Out-String).Trim())
+    Set-Content -LiteralPath $errorLog -Value $details -Encoding UTF8
     Write-Host ''
     Write-Host '[INSTALL ERROR]' -ForegroundColor Red
     Write-Host $details
@@ -29,7 +29,8 @@ trap {
 }
 
 function Find-Codex {
-    $command = Get-Command codex.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+    $command = Get-Command -Name codex.exe,codex.cmd -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty Source
     if ($command) { return $command }
     $binRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
     if (Test-Path -LiteralPath $binRoot) {
@@ -52,7 +53,7 @@ function Invoke-CodexCapture([string[]]$Arguments) {
 }
 
 function Convert-ToTomlLiteral([string]$value) {
-    return "'" + $value.Replace("'", "''") + "'"
+    return (ConvertTo-Json -InputObject $value -Compress)
 }
 
 function Set-CodexMcpConfig {
@@ -64,7 +65,7 @@ function Set-CodexMcpConfig {
     )
     $configDirectory = Split-Path -Parent $ConfigPath
     New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
-    $content = if (Test-Path -LiteralPath $ConfigPath) { Get-Content -LiteralPath $ConfigPath -Raw } else { '' }
+    $content = if (Test-Path -LiteralPath $ConfigPath) { [IO.File]::ReadAllText($ConfigPath) } else { '' }
     $sectionPattern = '(?ms)^\[mcp_servers\.(?:codeviser_cvd|codeviser)(?:\.env)?\]\r?\n.*?(?=^\[|\z)'
     $content = [regex]::Replace($content, $sectionPattern, '').TrimEnd()
     $argumentText = ($Arguments | ForEach-Object { Convert-ToTomlLiteral $_ }) -join ', '
@@ -81,7 +82,7 @@ function Set-CodexMcpConfig {
     foreach ($name in ($Environment.Keys | Sort-Object)) {
         $lines += "$name = $(Convert-ToTomlLiteral ([string]$Environment[$name]))"
     }
-    Set-Content -LiteralPath $ConfigPath -Value ($content + ($lines -join "`r`n") + "`r`n") -Encoding UTF8
+    [IO.File]::WriteAllText($ConfigPath, ($content + ($lines -join "`r`n") + "`r`n"))
 }
 
 if (-not $CvdRoot) {
@@ -96,7 +97,6 @@ $hotkeyFile = Join-Path $CvdRoot 'Script\cvd_hotkey.xml'
 $codex = Find-Codex
 if (-not (Test-Path -LiteralPath $cvdExe)) { throw "CVD.exe was not found: $cvdExe" }
 if (-not (Test-Path -LiteralPath (Join-Path $apiDir 'CVDAPI.dll'))) { throw "CVDAPI.dll was not found: $apiDir" }
-if (-not $codex) { throw 'Codex CLI was not found. Install and start Codex Desktop once, then retry.' }
 
 if (-not $MasterConfigPath) { $MasterConfigPath = Join-Path $packageRoot 'config\master.csf' }
 if (-not (Test-Path -LiteralPath $MasterConfigPath)) { throw "Master config was not found: $MasterConfigPath" }
@@ -132,8 +132,6 @@ if ($EnableGuiAutomation -and $CvdAccessPolicy -ne 'unrestricted') {
     throw '-EnableGuiAutomation requires -CvdAccessPolicy unrestricted.'
 }
 
-$removeOldResult = Invoke-CodexCapture @('mcp', 'remove', 'codeviser_cvd')
-$removeResult = Invoke-CodexCapture @('mcp', 'remove', 'codeviser')
 $mcpArgs = @(
     'mcp', 'add', 'codeviser',
     '--env', "CVD_API_DIR=$apiDir",
@@ -150,14 +148,21 @@ $mcpArgs = @(
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', (Join-Path $installRoot 'mcp\run-server.ps1')
 )
-$addResult = Invoke-CodexCapture $mcpArgs
-if ($addResult.ExitCode -ne 0) {
-    $userProfile = [Environment]::GetFolderPath('UserProfile')
-    if (-not $userProfile) { $userProfile = $env:USERPROFILE }
-    if (-not $userProfile) {
-        throw "Codex MCP registration failed and the user profile could not be located.`n$(Convert-ToAscii ($addResult.Output | Out-String))"
+$addResult = $null
+if ($codex) {
+    $null = Invoke-CodexCapture @('mcp', 'remove', 'codeviser_cvd')
+    $null = Invoke-CodexCapture @('mcp', 'remove', 'codeviser')
+    $addResult = Invoke-CodexCapture $mcpArgs
+}
+if ($null -eq $addResult -or $addResult.ExitCode -ne 0) {
+    $codexConfigDirectory = $env:CODEX_HOME
+    if (-not $codexConfigDirectory) {
+        $userProfile = [Environment]::GetFolderPath('UserProfile')
+        if (-not $userProfile) { $userProfile = $env:USERPROFILE }
+        if (-not $userProfile) { throw 'The Windows user profile could not be located.' }
+        $codexConfigDirectory = Join-Path $userProfile '.codex'
     }
-    $configPath = Join-Path $userProfile '.codex\config.toml'
+    $configPath = [IO.Path]::GetFullPath((Join-Path $codexConfigDirectory 'config.toml'))
     $serverArguments = @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', (Join-Path $installRoot 'mcp\run-server.ps1')
@@ -175,7 +180,7 @@ if ($addResult.ExitCode -ne 0) {
         CVD_POWERSHELL32 = 'C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
     }
     Set-CodexMcpConfig -ConfigPath $configPath -Command 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Arguments $serverArguments -Environment $serverEnvironment
-    Write-Host 'Codex CLI registration was unavailable; config.toml was updated directly.' -ForegroundColor Yellow
+    Write-Host "Codex CLI registration was unavailable. MCP config updated: $configPath" -ForegroundColor Yellow
 }
 else {
     $listResult = Invoke-CodexCapture @('mcp', 'list')
