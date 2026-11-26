@@ -13,6 +13,8 @@ MCP 서버가 실행되는 동안 하나의 32비트 브리지를 유지합니�
 
 ## 설치
 
+새 PC에서는 CodeViser CVD와 Windows용 ChatGPT 앱(Codex)을 준비하세요. Codex를 사용할 Windows 계정에서 설치 명령을 실행합니다. CLI를 찾지 못하면 설치기가 해당 계정의 `~/.codex/config.toml`에 MCP를 직접 등록합니다. `CODEX_HOME`을 설정했다면 그 경로를 사용합니다.
+
 ZIP 또는 저장소를 CodeViser 설치 루트 아래에 배치하는 것을 권장합니다.
 
 ```text
@@ -39,7 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
   -CvdRoot "D:\JnDTech\CVI\CVD"
 ```
 
-설치 후 Codex Desktop을 완전히 종료하고 다시 실행합니다.
+설치 후 Codex Desktop을 완전히 종료하고 다시 실행합니다. Codex에서 `현재 CodeViser API 연결 상태를 확인해줘`라고 요청해 등록을 확인합니다. MCP 실행에 필요한 `node.exe`를 런처가 찾지 못하면 새 PC에 Node.js를 설치하세요.
 
 ## 실행 정책
 
